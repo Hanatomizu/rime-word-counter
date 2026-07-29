@@ -5,6 +5,17 @@
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
 
+/// 分组粒度
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum GroupBy {
+    /// 按日分组（YYYY-MM-DD）
+    Day,
+    /// 按月分组（YYYY-MM）
+    Month,
+    /// 按年分组（YYYY）
+    Year,
+}
+
 /// 初始化数据库，创建 `daily_words` 表（如果不存在）。
 pub fn init_db(db_path: &str) -> Result<Connection> {
     let conn = Connection::open(db_path)
@@ -22,9 +33,6 @@ pub fn init_db(db_path: &str) -> Result<Connection> {
 }
 
 /// 插入或累加指定日期的字数。
-///
-/// 如果该日期已有记录，则将 `count` 累加到 `word_count`；
-/// 如果没有则插入新记录。
 pub fn upsert_word_count(conn: &Connection, date: &str, count: i64) -> Result<()> {
     conn.execute(
         "INSERT INTO daily_words (date, word_count)
@@ -37,35 +45,64 @@ pub fn upsert_word_count(conn: &Connection, date: &str, count: i64) -> Result<()
     Ok(())
 }
 
-/// 查询最近 N 天的字数数据，按日期升序返回。
+/// 查询指定日期范围内的字数数据，按指定粒度分组。
 ///
-/// 返回 `Vec<(date, word_count)>`，不足 N 天时返回全部可用数据。
-pub fn query_recent_days(conn: &Connection, days: i64) -> Result<Vec<(String, i64)>> {
-    let mut stmt = conn
-        .prepare(
+/// * `start_date` — 起始日期（含），格式 YYYY-MM-DD
+/// * `end_date` — 结束日期（含），格式 YYYY-MM-DD
+/// * `group_by` — 分组粒度
+pub fn query_grouped(
+    conn: &Connection,
+    start_date: &str,
+    end_date: &str,
+    group_by: GroupBy,
+) -> Result<Vec<(String, i64)>> {
+    let sql = match group_by {
+        GroupBy::Day => {
             "SELECT date, word_count
              FROM daily_words
-             ORDER BY date DESC
-             LIMIT ?1",
-        )
-        .context("准备查询语句失败")?;
+             WHERE date >= ?1 AND date <= ?2
+             ORDER BY date ASC"
+        }
+        GroupBy::Month => {
+            "SELECT substr(date, 1, 7) AS period, SUM(word_count)
+             FROM daily_words
+             WHERE date >= ?1 AND date <= ?2
+             GROUP BY period
+             ORDER BY period ASC"
+        }
+        GroupBy::Year => {
+            "SELECT substr(date, 1, 4) AS period, SUM(word_count)
+             FROM daily_words
+             WHERE date >= ?1 AND date <= ?2
+             GROUP BY period
+             ORDER BY period ASC"
+        }
+    };
 
+    let mut stmt = conn.prepare(sql).context("准备分组查询语句失败")?;
     let rows = stmt
-        .query_map(params![days], |row| {
+        .query_map(params![start_date, end_date], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, i64>(1)?,
             ))
         })
-        .context("查询字数数据失败")?;
+        .context("执行分组查询失败")?;
 
-    let mut result: Vec<(String, i64)> = rows
-        .filter_map(|r| r.ok())
-        .collect();
-
-    // 按日期升序排列（图表从左到右显示）
-    result.reverse();
+    let result: Vec<(String, i64)> = rows.filter_map(|r| r.ok()).collect();
     Ok(result)
+}
+
+/// 查询总字数（所有日期的累加）。
+pub fn query_total_words(conn: &Connection) -> Result<i64> {
+    let total: i64 = conn
+        .query_row(
+            "SELECT COALESCE(SUM(word_count), 0) FROM daily_words",
+            [],
+            |row| row.get(0),
+        )
+        .context("查询总字数失败")?;
+    Ok(total)
 }
 
 /// 查询全部字数数据，按日期升序返回。
@@ -92,6 +129,21 @@ pub fn query_all(conn: &Connection) -> Result<Vec<(String, i64)>> {
     Ok(result)
 }
 
+/// 获取数据库中的最早和最晚日期。
+pub fn query_date_range(conn: &Connection) -> Result<(String, String)> {
+    let (start, end): (Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT MIN(date), MAX(date) FROM daily_words",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .context("查询日期范围失败")?;
+
+    let start = start.unwrap_or_else(|| chrono::Local::now().format("%Y-%m-%d").to_string());
+    let end = end.unwrap_or_else(|| chrono::Local::now().format("%Y-%m-%d").to_string());
+    Ok((start, end))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -108,11 +160,23 @@ mod tests {
         conn
     }
 
+    fn seed_test_data(conn: &Connection) {
+        let data = vec![
+            ("2026-01-15", 100),
+            ("2026-01-20", 200),
+            ("2026-02-10", 300),
+            ("2026-02-15", 400),
+            ("2027-03-01", 500),
+        ];
+        for (date, count) in data {
+            upsert_word_count(conn, date, count).unwrap();
+        }
+    }
+
     #[test]
     fn test_upsert_new_record() {
         let conn = setup_test_db();
         upsert_word_count(&conn, "2026-07-29", 100).unwrap();
-
         let data = query_all(&conn).unwrap();
         assert_eq!(data.len(), 1);
         assert_eq!(data[0], ("2026-07-29".to_string(), 100));
@@ -123,24 +187,9 @@ mod tests {
         let conn = setup_test_db();
         upsert_word_count(&conn, "2026-07-29", 100).unwrap();
         upsert_word_count(&conn, "2026-07-29", 50).unwrap();
-
         let data = query_all(&conn).unwrap();
         assert_eq!(data.len(), 1);
         assert_eq!(data[0], ("2026-07-29".to_string(), 150));
-    }
-
-    #[test]
-    fn test_query_recent_days() {
-        let conn = setup_test_db();
-        upsert_word_count(&conn, "2026-07-28", 200).unwrap();
-        upsert_word_count(&conn, "2026-07-29", 100).unwrap();
-        upsert_word_count(&conn, "2026-07-30", 300).unwrap();
-
-        // 查最近 2 天 → 29, 30 号
-        let data = query_recent_days(&conn, 2).unwrap();
-        assert_eq!(data.len(), 2);
-        assert_eq!(data[0].0, "2026-07-29");
-        assert_eq!(data[1].0, "2026-07-30");
     }
 
     #[test]
@@ -149,11 +198,58 @@ mod tests {
         upsert_word_count(&conn, "2026-07-30", 300).unwrap();
         upsert_word_count(&conn, "2026-07-28", 200).unwrap();
         upsert_word_count(&conn, "2026-07-29", 100).unwrap();
-
         let data = query_all(&conn).unwrap();
         assert_eq!(data.len(), 3);
         assert_eq!(data[0].0, "2026-07-28");
         assert_eq!(data[1].0, "2026-07-29");
         assert_eq!(data[2].0, "2026-07-30");
+    }
+
+    #[test]
+    fn test_query_grouped_by_day() {
+        let conn = setup_test_db();
+        seed_test_data(&conn);
+        let data = query_grouped(&conn, "2026-01-01", "2026-12-31", GroupBy::Day).unwrap();
+        // Should return all 2026 entries in day granularity
+        assert_eq!(data.len(), 4);
+        assert_eq!(data[0], ("2026-01-15".to_string(), 100));
+        assert_eq!(data[3], ("2026-02-15".to_string(), 400));
+    }
+
+    #[test]
+    fn test_query_grouped_by_month() {
+        let conn = setup_test_db();
+        seed_test_data(&conn);
+        let data = query_grouped(&conn, "2026-01-01", "2026-12-31", GroupBy::Month).unwrap();
+        assert_eq!(data.len(), 2);
+        assert_eq!(data[0], ("2026-01".to_string(), 300));  // 100 + 200
+        assert_eq!(data[1], ("2026-02".to_string(), 700));  // 300 + 400
+    }
+
+    #[test]
+    fn test_query_grouped_by_year() {
+        let conn = setup_test_db();
+        seed_test_data(&conn);
+        let data = query_grouped(&conn, "2026-01-01", "2027-12-31", GroupBy::Year).unwrap();
+        assert_eq!(data.len(), 2);
+        assert_eq!(data[0], ("2026".to_string(), 1000));
+        assert_eq!(data[1], ("2027".to_string(), 500));
+    }
+
+    #[test]
+    fn test_query_total_words() {
+        let conn = setup_test_db();
+        seed_test_data(&conn);
+        let total = query_total_words(&conn).unwrap();
+        assert_eq!(total, 1500);
+    }
+
+    #[test]
+    fn test_query_date_range() {
+        let conn = setup_test_db();
+        seed_test_data(&conn);
+        let (start, end) = query_date_range(&conn).unwrap();
+        assert_eq!(start, "2026-01-15");
+        assert_eq!(end, "2027-03-01");
     }
 }

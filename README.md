@@ -1,38 +1,47 @@
 # Rime 字数统计工具 (rime-word-counter)
 
-为 [Rime 输入法](https://rime.im/) 开发的每日字数统计与可视化工具。
+为 [Rime 输入法](https://rime.im/) 开发的每日字数统计与可视化工具。提供 **图形界面**（默认）和 **CLI 处理模式**（用于定时任务）。
 
 ## 架构
 
 ```
-Lua 脚本（嵌入 Rime）         Rust 程序（定时运行）
-┌─────────────────┐         ┌──────────────────────┐
-│  Rime 输入法     │ 追加    │  rime-word-counter    │
-│  word_counter    │───────→ │                      │
-│  (processor)     │  CSV    │  ┌─ log_processor ──┐│
-│                   │ 日志    │  │  读取 & 汇总      ││
-│  每次上屏 →       │         │  │  (按日期分组)     ││
-│  记录日期,字数    │         │  └──────┬───────────┘│
-└─────────────────┘         │         ↓            │
-                            │  ┌──────┴───────────┐│
-                            │  │  SQLite 数据库    ││
-                            │  │  daily_words 表   ││
-                            │  └──────┬───────────┘│
-                            │         ↓            │
-                            │  ┌──────┴───────────┐│
-                            │  │  visualizer      ││
-                            │  │  plotters 图表   ││
-                            │  └──────────────────┘│
-                            └──────────────────────┘
+Lua 脚本（嵌入 Rime）         Rust 程序
+┌─────────────────┐         ┌──────────────────────────┐
+│  Rime 输入法     │ 追加    │  rime-word-counter        │
+│  word_counter    │───────→ │    ┌──────────────────┐  │
+│  (processor)     │  CSV    │    │  log_processor   │  │
+│                   │ 日志    │    │  读取 & 汇总     │  │
+│  每次上屏 →       │         │    └──────┬───────────┘  │
+│  记录日期,字数    │         │           ↓              │
+└─────────────────┘         │    ┌──────────────┐      │
+                            │    │  SQLite 数据库│      │
+                            │    │ daily_words   │      │
+                            │    └──────┬───────┘      │
+                            │           ↓              │
+                            │    ┌──────────────────┐  │
+                            │    │  GUI (egui)      │  │
+                            │    │  ├ 筛选面板      │  │
+                            │    │  ├ 图表显示      │  │
+                            │    │  └ 多语言支持    │  │
+                            │    └──────────────────┘  │
+                            └──────────────────────────┘
 ```
 
 ### 工作流程
 
-1. **Lua 脚本** 常驻 Rime 输入法，每次有文本上屏时（中英文输入确认后），
-   自动记录 `YYYY-MM-DD,字数` 到 CSV 日志文件。
-2. **Rust 程序** 读取 CSV 日志，按日期累加字数，写入 SQLite 数据库，
-   然后清空日志文件。
-3. **Rust 程序** 从 SQLite 读取最近 N 天的数据，生成 PNG 图表。
+1. **Lua 脚本** 常驻 Rime 输入法，每次上屏时记录 `YYYY-MM-DD,字数` 到 CSV 日志。
+2. **GUI 启动时** 自动处理日志 → 按日期汇总 → 存入 SQLite → 显示图表。
+3. 用户可在 GUI 中筛选日期范围、切换分组（日/月/年）、切换语言。
+
+## 功能特性
+
+- 🖥️ **图形界面** — 基于 egui 的原生窗口，无需浏览器
+- 🌍 **多语言** — 简体中文、繁体中文、English（自动检测 + 手动切换）
+- 📊 **交互图表** — 柱状图 + 折线叠加，数值标签标注
+- 📅 **灵活筛选** — 自定义日期范围，快捷选择（最近7天/30天/一年/全部）
+- 📈 **分组聚合** — 按日/月/年查看趋势
+- 🔄 **自动处理** — 启动时自动处理日志，支持手动"重新处理"
+- ⏰ **定时任务** — `--process` 模式可在 crontab 中运行
 
 ## 文件结构
 
@@ -43,7 +52,9 @@ rime-word-counter/
 │   ├── main.rs              # 入口，CLI 参数解析
 │   ├── db.rs                # SQLite 操作封装
 │   ├── log_processor.rs     # 日志处理、汇总、清空
-│   └── visualizer.rs        # plotters 图表生成
+│   ├── visualizer.rs        # plotters 图表渲染（内存输出）
+│   ├── gui.rs               # egui 图形界面
+│   └── i18n.rs              # 多语言（简中/繁中/英文）
 ├── lua/
 │   └── word_counter.lua     # Rime 的 Lua 日志脚本
 ├── README.md                # 本文件
@@ -65,8 +76,7 @@ rime-word-counter/
    word_counter_processor = require("word_counter")
    ```
 
-3. 在使用的输入方案（如 `luna_pinyin.schema.yaml` 或 `default.yaml`）中
-   `engine/processors` 列表末尾添加 `word_counter_processor`：
+3. 在使用的输入方案中 `engine/processors` 列表末尾添加 `word_counter_processor`：
    ```yaml
    schema:
      schema_id: luna_pinyin
@@ -89,7 +99,6 @@ rime-word-counter/
 
 ```bash
 # 确保已安装 Rust（https://rustup.rs/）
-# 编译发布版本
 cargo build --release
 
 # 编译产物在 target/release/rime-word-counter
@@ -98,56 +107,69 @@ cargo build --release
 ### 3. 运行
 
 ```bash
-# 处理日志并生成图表（默认模式）
+# 启动 GUI（默认模式，自动处理日志）
 ./target/release/rime-word-counter
 
-# 仅处理日志（不生成图表）
+# 仅处理日志（用于定时任务，不启动 GUI）
 ./target/release/rime-word-counter --process
-
-# 仅生成图表（从已有数据库读取）
-./target/release/rime-word-counter --visualize
 
 # 指定自定义路径
 ./target/release/rime-word-counter \
     --log-path ~/my_rime_word.log \
-    --db-path ~/my_stats.db \
-    --output ~/my_chart.png \
-    --days 60
+    --db-path ~/my_stats.db
 
 # 查看帮助
 ./target/release/rime-word-counter --help
 ```
 
-### 4. 自动化运行（推荐）
+### 4. 自动化运行
 
-将 Rust 程序加入定时任务，定期汇总数据：
-
-**Linux (crontab) — 每 30 分钟运行一次：**
+**Linux (crontab) — 每 30 分钟处理一次日志：**
 ```bash
 crontab -e
 # 添加：
 */30 * * * * /path/to/rime-word-counter --process
-0 22 * * * /path/to/rime-word-counter --visualize
 ```
 
-**macOS (launchd) 或 Windows (任务计划程序)：** 类似配置。
+需要查看图表时，直接运行程序即可打开 GUI。
 
 ## 命令行参数
 
 | 参数 | 说明 | 默认值 |
 |---|---|---|
-| `--process` | 仅处理日志，不生成图表 | 默认同时执行 |
-| `--visualize` | 仅生成图表，不处理日志 | 默认同时执行 |
+| `--process` | 仅处理日志（不启动 GUI） | |
+| `--gui` | 强制启动 GUI（默认行为） | |
 | `--log-path <PATH>` | CSV 日志文件路径 | `~/.cache/rime-word-counter/rime_word.log` |
 | `--db-path <PATH>` | SQLite 数据库路径 | `~/.cache/rime-word-counter/rime_stats.db` |
-| `--output <PATH>` | 图表 PNG 输出路径 | `./word_stats.png` |
-| `--days <N>` | 图表涵盖的天数 | `30` |
 | `--help` | 显示帮助信息 | |
+
+## GUI 使用说明
+
+### 布局
+- **顶部栏**：应用标题 + 总字数 + 语言切换下拉菜单
+- **左侧筛选面板**：日期范围（输入/快捷按钮）+ 分组依据（日/月/年）+ 重新处理按钮
+- **主区域**：字数趋势图表 + 统计卡片（数据天数 / 平均 / 最高 / 最低）
+
+### 语言切换
+点击右上角语言下拉菜单，可在简体中文、繁体中文、English 之间切换，所有 UI 文本实时更新。
+
+### 分组说明
+- **按日**：显示每一天的字数（原始粒度）
+- **按月**：聚合显示每月的总字数
+- **按年**：聚合显示每年的总字数
+
+## 多语言支持
+
+程序自动检测系统语言（`LANG` 环境变量）：
+- `zh_CN.*` / `zh-Hans` → 简体中文
+- `zh_TW.*` / `zh_HK.*` / `zh-Hant` → 繁体中文
+- 其他 → English
+
+GUI 内可随时切换语言。
 
 ## 数据存储
 
-- **日志文件** (`rime_word.log`): CSV 格式，每行 `YYYY-MM-DD,count`，无表头。
-  处理完毕后会自动清空。
+- **日志文件** (`rime_word.log`): CSV 格式 `YYYY-MM-DD,count`，无表头。处理完毕后自动清空。
 - **数据库** (`rime_stats.db`): SQLite 文件，表结构：
   ```sql
   CREATE TABLE daily_words (
@@ -155,15 +177,7 @@ crontab -e
       word_count INTEGER NOT NULL DEFAULT 0
   );
   ```
-  已存在的日期会自动累加。不会丢失历史数据。
-
-## 图表示例
-
-生成的图表包含：
-- 📊 **柱状图**：每日字数（橙色柱体）
-- 📈 **趋势线**：字数变化趋势（深红色折线）
-- 🔵 **数据点**：每日本值标注
-- 🏷️ **数值标签**：柱状图上方的具体字数
+  已存在的日期会自动累加，不会丢失历史数据。
 
 ## 开发
 
