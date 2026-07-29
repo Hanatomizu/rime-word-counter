@@ -449,6 +449,7 @@ impl eframe::App for GuiApp {
             .default_width(220.0)
             .frame(egui::Frame {
                 fill: style.visuals.panel_fill,
+                inner_margin: egui::Margin::symmetric(12, 8),
                 ..Default::default()
             })
             .show(ctx, |ui| {
