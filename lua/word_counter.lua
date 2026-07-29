@@ -41,82 +41,75 @@ local LOG_PATH = "~/.cache/rime-word-counter/rime_word.log"
 -- 是否过滤标点符号（true = 只统计汉字和字母，false = 统计所有字符）
 local FILTER_PUNCTUATION = false
 
--- 需要排除的标点字符（Unicode 范围，仅在 FILTER_PUNCTUATION = true 时生效）
--- 可以根据需要增删
-local PUNCTUATION_PATTERN = "[\
-    \\u3000-\\u303F\\\  -- CJK 符号和标点\
-    \\uFF00-\\uFFEF\\\  -- 全角标点\
-    \\u0021-\\u002F\\\  -- 半角标点 !\"#$%&'()*+,-./\
-    \\u003A-\\u0040\\\  -- :;<=>?@\
-    \\u005B-\\u005E\\\  -- [\\]^\
-    \\u005F\\u0060\\\   -- _`\
-    \\u007B-\\u007E\\\  -- {|}~\
-    \\u2000-\\u206F\\\  -- 通用标点\
-]"
+-- 需要排除的标点字符（仅在 FILTER_PUNCTUATION = true 时生效）
+-- 判断字符是否为标点：ASCII 标点 + CJK 标点范围 + 全角标点
+local function is_punctuation_char(codepoint)
+    -- ASCII 标点范围
+    if codepoint >= 0x0021 and codepoint <= 0x002F then return true end
+    if codepoint >= 0x003A and codepoint <= 0x0040 then return true end
+    if codepoint >= 0x005B and codepoint <= 0x005E then return true end
+    if codepoint == 0x005F or codepoint == 0x0060 then return true end
+    if codepoint >= 0x007B and codepoint <= 0x007E then return true end
+    -- CJK 符号和标点
+    if codepoint >= 0x3000 and codepoint <= 0x303F then return true end
+    -- 全角标点
+    if codepoint >= 0xFF00 and codepoint <= 0xFFEF then return true end
+    -- 通用标点
+    if codepoint >= 0x2000 and codepoint <= 0x206F then return true end
+    return false
+end
 
 -- ========== 核心功能 ==========
 
--- 兼容 Lua 5.1 的 UTF-8 字符计数器
--- 如果环境提供了 utf8.len，优先使用
-local function count_chars(text)
-    -- 尝试使用 Lua 5.3+ 内置 utf8 库
-    local ok, result = pcall(function()
-        if FILTER_PUNCTUATION then
-            -- 过滤标点后统计
-            local clean = text:gsub(PUNCTUATION_PATTERN, "")
-            return utf8.len(clean)
-        else
-            return utf8.len(text)
-        end
-    end)
+-- 解码一个 UTF-8 字符，返回 (codepoint, 占用字节数)
+local function decode_utf8_char(text, pos)
+    local b1 = text:byte(pos)
+    if not b1 then return nil, 0 end
 
-    if ok then
-        return result
+    local cp, n
+    if b1 < 0x80 then
+        return b1, 1
+    elseif b1 < 0xE0 then
+        cp = b1 % 0x20
+        n = 2
+    elseif b1 < 0xF0 then
+        cp = b1 % 0x10
+        n = 3
+    else
+        cp = b1 % 0x08
+        n = 4
     end
 
-    -- 备用方案：手动遍历 UTF-8 字节序列（兼容 Lua 5.1）
+    for j = 1, n - 1 do
+        local nb = text:byte(pos + j)
+        if not nb then return nil, 0 end
+        cp = cp * 64 + (nb % 64)
+    end
+    return cp, n
+end
+
+-- UTF-8 字符计数器（兼容 Lua 5.1）
+local function count_chars(text)
+    -- 优先使用 Lua 5.3+ utf8.len（不需要过滤标点时）
+    if not FILTER_PUNCTUATION then
+        local ok, len = pcall(function() return utf8.len(text) end)
+        if ok and len then return len end
+    end
+
+    -- 手动遍历 UTF-8 字符
     local count = 0
     local i = 1
     while i <= #text do
-        local byte = text:byte(i)
-        if byte < 128 then
-            -- 单字节 ASCII
-            if not FILTER_PUNCTUATION then
-                count = count + 1
-            elseif not is_ascii_punctuation(byte) then
-                count = count + 1
-            end
-            i = i + 1
-        elseif byte < 224 then
-            -- 双字节（如拉丁扩展字符）
-            count = count + 1
-            i = i + 2
-        elseif byte < 240 then
-            -- 三字节（CJK 统一表意文字等）
-            count = count + 1
-            i = i + 3
+        local cp, n = decode_utf8_char(text, i)
+        if not cp then break end
+        if FILTER_PUNCTUATION then
+            if not is_punctuation_char(cp) then count = count + 1 end
         else
-            -- 四字节（表情符号等）
             count = count + 1
-            i = i + 4
         end
+        i = i + n
     end
     return count
-end
-
--- 判断 ASCII 标点（仅当 FILTER_PUNCTUATION 启用时使用）
-local function is_ascii_punctuation(byte)
-    local punct_ranges = {
-        {0x21, 0x2F}, {0x3A, 0x40},
-        {0x5B, 0x5E}, {0x60, 0x60},
-        {0x7B, 0x7E},
-    }
-    for _, range in ipairs(punct_ranges) do
-        if byte >= range[1] and byte <= range[2] then
-            return true
-        end
-    end
-    return false
 end
 
 -- 展开路径（将开头的 ~ 替换为用户主目录）
@@ -184,25 +177,30 @@ function processor.func(key, env)
 end
 
 -- 上屏回调（Rime 在有文本上屏时调用）
--- text: 上屏的完整文本字符串
+-- 兼容不同版本 librime-lua 的 API：
+--   新版: commit(env)       → env.commit_text 包含上屏文本
+--   旧版: commit(env, text) → text 直接传递上屏文本
+--   其他: commit(text)      → env 就是字符串
 function processor.commit(env, text)
+    -- 参数标准化：确保 text 包含上屏字符串
+    if type(env) == "string" then
+        text = env
+    elseif text == nil and type(env) == "table" then
+        text = env.commit_text or env.text
+    end
+
     if text == nil or text == "" then
         return
     end
 
     local word_count = count_chars(text)
     if word_count == nil or word_count == 0 then
-        -- 上屏内容为空或全为标点时可以选择忽略
         return
     end
 
-    -- 检查是否为功能键产生的空内容
-    if type(text) == "string" and text ~= "" then
-        local ok = write_log(word_count)
-        if ok then
-            -- 调试信息（可通过 Rime 日志查看）
-            -- io.stderr:write("[word_counter] 记录: " .. get_today() .. "," .. word_count .. "\n")
-        end
+    local ok = write_log(word_count)
+    if ok then
+        io.stderr:write("[word_counter] " .. get_today() .. "," .. word_count .. "\n")
     end
 end
 
