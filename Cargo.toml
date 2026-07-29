@@ -1,0 +1,20 @@
+[package]
+name = "rime-word-counter"
+version = "0.1.0"
+edition = "2021"
+description = "Rime 输入法字数统计与可视化工具"
+authors = ["hanatomizu"]
+
+[dependencies]
+# CLI 参数解析
+clap = { version = "4", features = ["derive"] }
+# SQLite 嵌入式数据库（bundled 内嵌 SQLite，无需系统安装）
+rusqlite = { version = "0.32", features = ["bundled"] }
+# 日期解析与格式化
+chrono = "0.4"
+# 图表生成（PNG 后端）
+plotters = "0.3"
+# 错误处理
+anyhow = "1"
+# 获取平台标准目录（缓存目录等）
+dirs = "5"

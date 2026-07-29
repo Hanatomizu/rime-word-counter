@@ -1,0 +1,14 @@
+# Rust 编译输出
+/target
+
+# 生成的图表
+*.png
+
+# SQLite 数据库文件
+*.db
+
+# 日志文件
+*.log
+
+# 配置文件（包含用户路径等敏感信息）
+config.toml
