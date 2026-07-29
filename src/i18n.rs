@@ -45,6 +45,7 @@ pub fn detect_language() -> Language {
 
 /// 语言包结构体，存放所有 UI 文本
 #[derive(Clone)]
+#[allow(dead_code)]
 pub struct Strings {
     // 窗口标题
     pub app_title: &'static str,

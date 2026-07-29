@@ -50,6 +50,7 @@ pub fn upsert_word_count(conn: &Connection, date: &str, count: i64) -> Result<()
 /// * `start_date` — 起始日期（含），格式 YYYY-MM-DD
 /// * `end_date` — 结束日期（含），格式 YYYY-MM-DD
 /// * `group_by` — 分组粒度
+#[allow(dead_code)]
 pub fn query_grouped(
     conn: &Connection,
     start_date: &str,

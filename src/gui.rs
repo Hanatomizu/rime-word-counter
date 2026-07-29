@@ -1,7 +1,7 @@
 //! GUI 界面模块
 //!
 //! 使用 egui (eframe) 实现字数统计的图形界面。
-//! 包含筛选面板、图表显示、多语言切换等功能。
+//! 包含筛选面板、图表显示、多语言切换、深色/浅色主题等功能。
 
 use std::collections::HashMap;
 
@@ -17,12 +17,95 @@ use crate::visualizer;
 const CHART_RENDER_WIDTH: u32 = 1200;
 const CHART_RENDER_HEIGHT: u32 = 500;
 
+// ========== 中文字体加载 ==========
+
+/// 常见 CJK 字体文件路径（按优先级排序）。
+/// 程序会依次检查，使用第一个可用的字体。
+const CJK_FONT_PATHS: &[&str] = &[
+    // Linux 常用路径
+    "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/noto-cjk/NotoSansCJKSC-Regular.otf",
+    "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+    "/usr/share/fonts/TTF/uming.ttc",
+    "/usr/share/fonts/truetype/arphic/uming.ttc",
+    // 用户目录（手动安装的字体）
+    "/home/hanatomizu/.local/share/fonts/Deng.ttf",
+    "/home/hanatomizu/.local/share/fonts/simhei.ttf",
+    "/home/hanatomizu/.local/share/fonts/simkai.ttf",
+    "/home/hanatomizu/.local/share/fonts/NotoSansSC-VF.ttf",
+    // macOS
+    "/System/Library/Fonts/PingFang.ttc",
+    "/System/Library/Fonts/STHeiti Light.ttc",
+    // Windows
+    "C:\\Windows\\Fonts\\msyh.ttc",
+    "C:\\Windows\\Fonts\\simsun.ttc",
+];
+
+/// 查找系统中可用的 CJK 字体文件路径，返回第一个可用的。
+/// 如果找不到，返回 None（egui 将使用默认字体，中文显示为方框）。
+fn find_cjk_font_path() -> Option<String> {
+    for path in CJK_FONT_PATHS {
+        let expanded = if path.starts_with('~') {
+            let home = std::env::var("HOME").ok()?;
+            path.replacen('~', &home, 1)
+        } else {
+            path.to_string()
+        };
+        if std::path::Path::new(&expanded).exists() {
+            return Some(expanded);
+        }
+    }
+    None
+}
+
+/// 在 egui 的 FontDefinitions 中注册 CJK 字体。
+/// 这是解决中文显示为方框的关键步骤。
+fn setup_cjk_font(cc: &eframe::CreationContext<'_>) {
+    let font_path = match find_cjk_font_path() {
+        Some(p) => p,
+        None => return, // 没有找到中文字体，用默认字体
+    };
+
+    let font_data = match std::fs::read(&font_path) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("[WARN] 无法读取字体文件 {font_path}: {e}");
+            return;
+        }
+    };
+
+    let mut fonts = egui::FontDefinitions::default();
+
+    // 注册 CJK 字体
+    let font_name = "rime_cjk_font";
+    fonts.font_data.insert(
+        font_name.to_owned(),
+        std::sync::Arc::new(egui::FontData::from_owned(font_data)),
+    );
+
+    // 将 CJK 字体追加到 Proportional 和 Monospace 的 fallback 列表末尾
+    for family in &[egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+        if let Some(list) = fonts.families.get_mut(family) {
+            list.push(font_name.to_owned());
+        }
+    }
+
+    cc.egui_ctx.set_fonts(fonts);
+}
+
+// ========== GUI 应用 ==========
+
 /// GUI 应用主状态
 pub struct GuiApp {
     db_path: String,
     lang: Language,
 
-    // 全部数据（按日，从数据库加载）
+    // 主题
+    dark_mode: bool,
+
+    // 全部数据
     all_data: Vec<(String, i64)>,
     total_words: i64,
 
@@ -60,12 +143,13 @@ pub struct GuiApp {
 
 impl GuiApp {
     /// 创建并初始化 GUI 应用。
-    pub fn new(db_path: &str) -> Self {
+    pub fn new(db_path: &str, dark_mode: bool) -> Self {
         let lang = i18n::detect_language();
 
         let mut app = GuiApp {
             db_path: db_path.to_string(),
             lang,
+            dark_mode,
             all_data: Vec::new(),
             total_words: 0,
             start_date: String::new(),
@@ -98,15 +182,12 @@ impl GuiApp {
         app
     }
 
-    /// 加载数据：处理日志 → 读取数据库 → 初始化筛选
     fn load_data(&mut self) -> Result<()> {
         let s = Strings::for_language(self.lang);
-
         self.status_message = s.processing_log.to_string();
         log_processor::process_logs(&crate::default_log_path(), &self.db_path)?;
 
         let conn = db::init_db(&self.db_path)?;
-
         self.status_message = s.loading_data.to_string();
         self.all_data = db::query_all(&conn)?;
         self.total_words = db::query_total_words(&conn)?;
@@ -121,7 +202,6 @@ impl GuiApp {
         Ok(())
     }
 
-    /// 重新处理日志并刷新数据
     fn reprocess(&mut self) {
         self.is_processing = true;
         self.error_message = None;
@@ -132,7 +212,6 @@ impl GuiApp {
         self.chart_needs_update = true;
     }
 
-    /// 根据当前筛选条件过滤并聚合数据
     fn apply_filter(&mut self) {
         let start_ok = NaiveDate::parse_from_str(&self.start_date, "%Y-%m-%d").is_ok();
         let end_ok = NaiveDate::parse_from_str(&self.end_date, "%Y-%m-%d").is_ok();
@@ -155,7 +234,6 @@ impl GuiApp {
                     && date.as_str() <= self.end_date.as_str()
             })
             .collect();
-
         in_range.sort_by(|a, b| a.0.cmp(&b.0));
 
         self.filtered_data = match self.group_by {
@@ -191,11 +269,9 @@ impl GuiApp {
         };
         self.max_words = counts.iter().max().copied().unwrap_or(0);
         self.min_words = counts.iter().min().copied().unwrap_or(0);
-
         self.chart_needs_update = true;
     }
 
-    /// 渲染图表到纹理
     fn update_chart_texture(&mut self, ctx: &egui::Context) {
         if !self.chart_needs_update || self.filtered_data.is_empty() {
             return;
@@ -234,13 +310,10 @@ impl GuiApp {
                 self.chart_needs_update = false;
                 self.status_message = String::new();
             }
-            Err(e) => {
-                self.error_message = Some(e.to_string());
-            }
+            Err(e) => self.error_message = Some(e.to_string()),
         }
     }
 
-    /// 快速设置日期范围
     fn set_date_range_days(&mut self, days: i64) {
         let end = chrono::Local::now().date_naive();
         let start = end - chrono::Duration::days(days - 1);
@@ -266,6 +339,15 @@ impl GuiApp {
 
 impl eframe::App for GuiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // ---- 应用主题 ----
+        let visuals = if self.dark_mode {
+            egui::Visuals::dark()
+        } else {
+            egui::Visuals::light()
+        };
+        ctx.set_visuals(visuals);
+        let style = ctx.style();
+
         let strings = Strings::for_language(self.lang);
 
         // ---- 加载中 ----
@@ -283,58 +365,81 @@ impl eframe::App for GuiApp {
         }
 
         // ---- 顶部栏 ----
+        let header_color = if self.dark_mode {
+            egui::Color32::from_rgb(0x22, 0x22, 0x22)
+        } else {
+            egui::Color32::from_rgb(0x33, 0x33, 0x33)
+        };
+        let header_text_color = egui::Color32::from_rgb(0xFF, 0xFF, 0xFF);
+
         egui::TopBottomPanel::top("top_bar")
             .min_height(48.0)
             .frame(egui::Frame {
-                fill: egui::Color32::from_rgb(0x33, 0x33, 0x33),
+                fill: header_color,
                 inner_margin: egui::Margin::symmetric(16, 10),
                 ..Default::default()
             })
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
+                    // 标题
                     ui.heading(
                         egui::RichText::new(strings.app_title)
-                            .color(egui::Color32::from_rgb(0xFF, 0xFF, 0xFF))
+                            .color(header_text_color)
                             .size(18.0),
                     );
 
-                    ui.with_layout(
-                        egui::Layout::right_to_left(egui::Align::Center),
-                        |ui| {
-                            let current_lang_label = Language::all()
-                                .iter()
-                                .find(|(l, _)| *l == self.lang)
-                                .map(|(_, label)| *label)
-                                .unwrap_or("");
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        // 主题切换按钮
+                        let theme_icon = if self.dark_mode { "☀️" } else { "🌙" };
+                        let theme_tip = if self.dark_mode {
+                            "Switch to Light"
+                        } else {
+                            "Switch to Dark"
+                        };
+                        if ui
+                            .add(
+                                egui::Button::new(egui::RichText::new(theme_icon).size(18.0))
+                                    .frame(false),
+                            )
+                            .on_hover_text(theme_tip)
+                            .clicked()
+                        {
+                            self.dark_mode = !self.dark_mode;
+                        }
 
-                            egui::ComboBox::from_id_salt("lang_selector")
-                                .selected_text(current_lang_label)
-                                .width(90.0)
-                                .show_ui(ui, |ui| {
-                                    for (lang, label) in Language::all() {
-                                        if ui.selectable_label(*lang == self.lang, *label).clicked() {
-                                            self.lang = *lang;
-                                        }
+                        // 语言切换
+                        let current_lang_label = Language::all()
+                            .iter()
+                            .find(|(l, _)| *l == self.lang)
+                            .map(|(_, label)| *label)
+                            .unwrap_or("");
+                        egui::ComboBox::from_id_salt("lang_selector")
+                            .selected_text(current_lang_label)
+                            .width(90.0)
+                            .show_ui(ui, |ui| {
+                                for (lang, label) in Language::all() {
+                                    if ui.selectable_label(*lang == self.lang, *label).clicked() {
+                                        self.lang = *lang;
                                     }
-                                });
+                                }
+                            });
 
-                            let total_text = strings
-                                .total_words_fmt
-                                .replace("{}", &format_count(self.total_words));
-                            ui.label(
-                                egui::RichText::new(total_text)
-                                    .color(egui::Color32::from_rgb(0xE8, 0x6C, 0x00))
-                                    .size(16.0)
-                                    .strong(),
-                            );
-
-                            ui.label(
-                                egui::RichText::new(strings.total_words)
-                                    .color(egui::Color32::from_gray(0xAA))
-                                    .size(13.0),
-                            );
-                        },
-                    );
+                        // 总字数
+                        let total_text = strings
+                            .total_words_fmt
+                            .replace("{}", &format_count(self.total_words));
+                        ui.label(
+                            egui::RichText::new(total_text)
+                                .color(egui::Color32::from_rgb(0xE8, 0x6C, 0x00))
+                                .size(16.0)
+                                .strong(),
+                        );
+                        ui.label(
+                            egui::RichText::new(strings.total_words)
+                                .color(egui::Color32::from_gray(0xAA))
+                                .size(13.0),
+                        );
+                    });
                 });
             });
 
@@ -343,27 +448,26 @@ impl eframe::App for GuiApp {
             .resizable(false)
             .default_width(220.0)
             .frame(egui::Frame {
-                fill: egui::Color32::from_rgb(0xF5, 0xF5, 0xF5),
-                inner_margin: egui::Margin::symmetric(16, 16),
+                fill: style.visuals.panel_fill,
                 ..Default::default()
             })
             .show(ctx, |ui| {
                 ui.vertical(|ui| {
-                    // 筛选标题
                     ui.label(
                         egui::RichText::new(strings.filter_panel)
                             .size(14.0)
                             .strong()
-                            .color(egui::Color32::from_rgb(0x55, 0x55, 0x55)),
+                            .color(style.visuals.text_color()),
                     );
                     ui.separator();
                     ui.add_space(8.0);
 
                     // 开始日期
+                    let label_color = style.visuals.text_color().linear_multiply(0.6);
                     ui.label(
                         egui::RichText::new(strings.start_date)
                             .size(12.0)
-                            .color(egui::Color32::from_gray(0x88)),
+                            .color(label_color),
                     );
                     let sr = ui.add_sized(
                         [ui.available_width(), 24.0],
@@ -382,7 +486,7 @@ impl eframe::App for GuiApp {
                     ui.label(
                         egui::RichText::new(strings.end_date)
                             .size(12.0)
-                            .color(egui::Color32::from_gray(0x88)),
+                            .color(label_color),
                     );
                     let er = ui.add_sized(
                         [ui.available_width(), 24.0],
@@ -401,7 +505,7 @@ impl eframe::App for GuiApp {
                     ui.label(
                         egui::RichText::new("Quick:")
                             .size(11.0)
-                            .color(egui::Color32::from_gray(0x99)),
+                            .color(label_color),
                     );
                     ui.horizontal_wrapped(|ui| {
                         let bs = egui::vec2((ui.available_width() - 4.0) / 2.0, 26.0);
@@ -424,7 +528,7 @@ impl eframe::App for GuiApp {
                     ui.label(
                         egui::RichText::new(strings.group_by)
                             .size(12.0)
-                            .color(egui::Color32::from_gray(0x88)),
+                            .color(label_color),
                     );
                     ui.horizontal(|ui| {
                         ui.radio_value(&mut self.group_by, GroupBy::Day, strings.daily);
@@ -438,12 +542,12 @@ impl eframe::App for GuiApp {
 
                     ui.add_space(24.0);
 
+                    let btn_color = egui::Color32::from_rgb(0xE8, 0x6C, 0x00);
                     if ui
                         .add_sized(
                             [ui.available_width(), 32.0],
                             egui::Button::new(
-                                egui::RichText::new(strings.reprocess)
-                                    .color(egui::Color32::from_rgb(0xE8, 0x6C, 0x00)),
+                                egui::RichText::new(strings.reprocess).color(btn_color),
                             )
                             .fill(egui::Color32::from_rgb(0xFF, 0xF0, 0xE0)),
                         )
@@ -456,19 +560,17 @@ impl eframe::App for GuiApp {
 
         // ---- 主内容区域 ----
         egui::CentralPanel::default()
-            .frame(egui::Frame {
-                fill: egui::Color32::from_rgb(0xFA, 0xFA, 0xFA),
-                inner_margin: egui::Margin::symmetric(20, 16),
-                ..Default::default()
-            })
+            .frame(egui::Frame::central_panel(&style))
             .show(ctx, |ui| {
+                let avail = ui.available_size();
+
                 if self.all_data.is_empty() {
                     ui.vertical_centered(|ui| {
-                        ui.add_space(ui.available_height() * 0.35);
+                        ui.add_space(avail.y * 0.35);
                         ui.label(
                             egui::RichText::new(strings.no_data)
                                 .size(16.0)
-                                .color(egui::Color32::from_gray(0xAA)),
+                                .color(style.visuals.text_color().linear_multiply(0.6)),
                         );
                     });
                     return;
@@ -478,7 +580,6 @@ impl eframe::App for GuiApp {
                 self.update_chart_texture(ctx);
 
                 if let Some(texture) = &self.chart_texture {
-                    let avail = ui.available_size();
                     let aspect = CHART_RENDER_WIDTH as f32 / CHART_RENDER_HEIGHT as f32;
                     let img_width = avail.x.min(1200.0);
                     let img_height = (img_width / aspect).min(avail.y * 0.65);
@@ -501,35 +602,40 @@ impl eframe::App for GuiApp {
                     };
 
                     ui.horizontal(|ui| {
-                        let stat_style = |text: &str| {
-                            egui::RichText::new(text)
-                                .size(13.0)
-                                .color(egui::Color32::from_rgb(0x55, 0x55, 0x55))
-                        };
+                        let stat_color = style.visuals.text_color().linear_multiply(0.85);
 
                         let days_text = strings
                             .stats_days
                             .replace("{}", &self.display_days.to_string());
-                        frame_card(ui, |ui| {
-                            ui.label(stat_style(&format!("{} {}", days_text, day_label)));
+                        frame_card(ui, &style, |ui| {
+                            ui.label(
+                                egui::RichText::new(format!("{} {}", days_text, day_label))
+                                    .color(stat_color),
+                            );
                         });
 
                         let avg_text =
                             strings.stats_avg.replace("{}", &format_count(self.avg_words as i64));
-                        frame_card(ui, |ui| {
-                            ui.label(stat_style(&avg_text));
+                        frame_card(ui, &style, |ui| {
+                            ui.label(
+                                egui::RichText::new(avg_text).color(stat_color),
+                            );
                         });
 
                         let max_text =
                             strings.stats_max.replace("{}", &format_count(self.max_words));
-                        frame_card(ui, |ui| {
-                            ui.label(stat_style(&max_text));
+                        frame_card(ui, &style, |ui| {
+                            ui.label(
+                                egui::RichText::new(max_text).color(stat_color),
+                            );
                         });
 
                         let min_text =
                             strings.stats_min.replace("{}", &format_count(self.min_words));
-                        frame_card(ui, |ui| {
-                            ui.label(stat_style(&min_text));
+                        frame_card(ui, &style, |ui| {
+                            ui.label(
+                                egui::RichText::new(min_text).color(stat_color),
+                            );
                         });
                     });
                 }
@@ -544,7 +650,10 @@ impl eframe::App for GuiApp {
 
                 if !self.status_message.is_empty() {
                     ui.add_space(4.0);
-                    ui.colored_label(egui::Color32::from_gray(0x88), &self.status_message);
+                    ui.colored_label(
+                        style.visuals.text_color().linear_multiply(0.6),
+                        &self.status_message,
+                    );
                 }
             });
     }
@@ -564,10 +673,10 @@ fn format_count(n: i64) -> String {
     result
 }
 
-/// 绘制卡片背景 frame
-fn frame_card(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui)) {
+/// 绘制统计卡片（白色背景，圆角，适应主题）
+fn frame_card(ui: &mut egui::Ui, style: &egui::Style, add_contents: impl FnOnce(&mut egui::Ui)) {
     egui::Frame {
-        fill: egui::Color32::from_rgb(0xFF, 0xFF, 0xFF),
+        fill: style.visuals.window_fill(),
         corner_radius: egui::CornerRadius::same(6),
         shadow: egui::epaint::Shadow {
             offset: [0, 1].into(),
@@ -595,7 +704,12 @@ pub fn run_gui(db_path: &str) -> Result<()> {
     eframe::run_native(
         "Rime Word Counter",
         options,
-        Box::new(move |_cc| Ok(Box::new(GuiApp::new(&db_path_owned)))),
+        Box::new(move |cc| {
+            // 注册中文字体（解决中文方框问题）
+            setup_cjk_font(cc);
+            // 默认使用深色模式（跟随系统）
+            Ok(Box::new(GuiApp::new(&db_path_owned, true)))
+        }),
     )
     .map_err(|e| anyhow::anyhow!("GUI 错误: {e}"))?;
 
