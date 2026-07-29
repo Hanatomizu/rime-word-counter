@@ -13,6 +13,34 @@ const BAR_COLOR: RGBColor = RGBColor(0xE8, 0x6C, 0x00); // 橙色柱体
 const LINE_COLOR: RGBColor = RGBColor(0xC0, 0x39, 0x2B); // 深红色折线
 const ACCENT_COLOR: RGBColor = RGBColor(0xF3, 0x9C, 0x12); // 金色数据点
 
+/// 支持中文的候选字体列表（按优先级排序）。
+/// 程序会依次尝试，使用第一个可用的字体。
+const CJK_FONT_CANDIDATES: &[&str] = &[
+    "DengXian",            // Microsoft DengXian（Windows 自带）
+    "AR PL UMing CN",      // 开源明体（Linux 包 ttf-arphic-uming）
+    "AR PL UKai CN",       // 开源楷体（Linux 包 ttf-arphic-ukai）
+    "Noto Sans CJK SC",    // Google Noto Sans CJK
+    "Noto Serif CJK SC",   // Google Noto Serif CJK
+    "WenQuanYi Micro Hei", // 文泉驿微米黑
+    "Microsoft YaHei",     // 微软雅黑
+    "SimHei",              // 黑体
+    "FangSong",            // 仿宋
+];
+
+/// 探测系统中可用的中文字体，返回第一个能正常加载的字体家族名。
+/// 如果所有候选字体都不可用，回退到 sans-serif。
+fn find_cjk_font() -> &'static str {
+    for name in CJK_FONT_CANDIDATES {
+        let font: FontDesc = (*name, 12).into_font();
+        if font.layout_box("测试").is_ok() {
+            return name;
+        }
+    }
+    // 如果尝试了所有中文字体都不可用，使用系统默认 sans-serif
+    // 此时中文可能显示为方框，但程序不会崩溃
+    "sans-serif"
+}
+
 /// 生成字数统计图表，保存为 PNG 文件。
 ///
 /// * `db_path` — SQLite 数据库路径
@@ -45,6 +73,10 @@ pub fn generate_chart(db_path: &str, output_path: &str, days: i64) -> Result<()>
     root.fill(&WHITE)
         .with_context(|| "无法填充图表背景")?;
 
+    // 探测中文字体
+    let cjk_font = find_cjk_font();
+    println!("[INFO]   使用字体: {cjk_font}");
+
     // 计算 Y 轴范围
     let max_count = data.iter().map(|(_, c)| *c).max().unwrap_or(1) as f64;
     let y_max = (max_count * 1.2).ceil().max(10.0); // 顶部留 20% 空间
@@ -60,7 +92,7 @@ pub fn generate_chart(db_path: &str, output_path: &str, days: i64) -> Result<()>
     let x_max = (count - 1) as f64 + 0.5;
 
     let mut chart = ChartBuilder::on(&root)
-        .caption("每日输入字数统计", ("sans-serif", 32).into_font())
+        .caption("每日输入字数统计", (cjk_font, 32).into_font())
         .margin(20)
         .x_label_area_size(50)
         .y_label_area_size(60)
@@ -88,8 +120,8 @@ pub fn generate_chart(db_path: &str, output_path: &str, days: i64) -> Result<()>
         .y_label_formatter(&|v| format!("{}", *v as i64))
         .x_desc("日期")
         .y_desc("字数")
-        .axis_desc_style(("sans-serif", 18))
-        .label_style(("sans-serif", 14))
+        .axis_desc_style((cjk_font, 18))
+        .label_style((cjk_font, 14))
         .light_line_style(&RGBColor(0xE0, 0xE0, 0xE0))
         .bold_line_style(&WHITE.mix(0.0))
         .draw()?;
@@ -137,7 +169,7 @@ pub fn generate_chart(db_path: &str, output_path: &str, days: i64) -> Result<()>
         .context("绘制数据点失败")?;
 
     // —— 在每个柱子上方标注具体数值 ——
-    let label_font = ("sans-serif", 12).into_font().color(&BLACK.mix(0.6));
+    let label_font = (cjk_font, 12).into_font().color(&BLACK.mix(0.6));
     for (i, (_date, count)) in data.iter().enumerate() {
         if *count > 0 {
             chart
@@ -155,7 +187,7 @@ pub fn generate_chart(db_path: &str, output_path: &str, days: i64) -> Result<()>
         .configure_series_labels()
         .background_style(&WHITE.mix(0.8))
         .border_style(&BLACK.mix(0.2))
-        .label_font(("sans-serif", 14))
+        .label_font((cjk_font, 14))
         .position(SeriesLabelPosition::UpperLeft)
         .draw()
         .context("绘制图例失败")?;
