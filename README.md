@@ -71,29 +71,16 @@ rime-word-counter/
    - **macOS**: `~/Library/Rime/lua/`
    - **Windows**: `%APPDATA%\Rime\lua\`
 
-2. 在 Rime 用户目录下创建/编辑 `rime.lua`，添加：
-   ```lua
-   word_counter_processor = require("word_counter")
-   ```
+2. 在你的输入方案配置文件下（比如我的雾凇拼音 `rime_ice.custom.yaml`）中加入：
 
-3. 在使用的输入方案中 `engine/processors` 列表末尾添加 `word_counter_processor`：
-   ```yaml
-   schema:
-     schema_id: luna_pinyin
-   engine:
-     processors:
-       - ascii_composer
-       - recognizer
-       - key_binder
-       - speller
-       - punctuator
-       - selector
-       - navigator
-       - express_editor
-       - word_counter_processor    # ← 添加这一行
-   ```
+```yaml
+patch:
+  engine/processors/+:
+    - lua_processor@*word_counter
 
-4. 重新部署 Rime（通常按 `Ctrl+Option+~` 或右键托盘图标选「重新部署」）。
+```
+
+3. 重新部署 Rime（通常按 `Ctrl+Option+~` 或右键托盘图标选「重新部署」）。
 
 ### 2. 编译 Rust 程序
 
