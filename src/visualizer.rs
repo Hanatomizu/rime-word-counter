@@ -109,8 +109,8 @@ pub fn render_chart_to_rgba(
             .y_label_formatter(&|v| format!("{}", *v as i64))
             .x_desc(x_label)
             .y_desc(y_label)
-            .axis_desc_style((font_name, 16))
-            .label_style((font_name, 13))
+            .axis_desc_style((font_name, 20))
+            .label_style((font_name, 20))
             .light_line_style(&RGBColor(0xE0, 0xE0, 0xE0))
             .bold_line_style(&WHITE.mix(0.0))
             .draw()?;
@@ -151,7 +151,7 @@ pub fn render_chart_to_rgba(
             .context("绘制数据点失败")?;
 
         // 数值标签
-        let label_font = (font_name, 11).into_font().color(&BLACK.mix(0.6));
+        let label_font = (font_name, 25).into_font().color(&BLACK.mix(0.6));
         for (i, (_, count)) in data.iter().enumerate() {
             if *count > 0 {
                 chart
