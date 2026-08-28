@@ -1,9 +1,16 @@
 [package]
 name = "rime-word-counter"
-version = "0.2.0"
+version = "1.0.0-r2"
 edition = "2021"
 description = "Rime 输入法字数统计与可视化工具"
 authors = ["hanatomizu"]
+repository = "https://github.com/Hanatomizu/rime-word-counter"
+
+[package.metadata.wix]
+upgrade-guid = "3ECCD00C-9887-48A8-98E3-63274F112D33"
+path-guid = "35C32B62-9455-4607-96E4-902AEA99EF25"
+license = false
+eula = false
 
 [dependencies]
 # CLI 参数解析
@@ -21,3 +28,8 @@ dirs = "5"
 # GUI 框架（egui）
 eframe = "0.31"
 egui = "0.31"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
