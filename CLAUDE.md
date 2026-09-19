@@ -1,77 +1,45 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+本仓库的完整上手文档见 **[AGENTS.md](./AGENTS.md)**（架构、模块职责、命令、设计系统、踩坑记录）。
+本文件只保留最容易踩错的几条，避免两份文档漂移。
 
-## Commands
+## 这是什么
+
+Rime 输入法每日字数统计工具。Lua 脚本写 CSV 日志 → Rust 汇总进 SQLite → 桌面端 / 命令行展示。
+
+## 两个前端，一个核心
+
+| 目标 | 产物 | 入口 |
+|---|---|---|
+| 桌面端（默认产品形态） | `rime-word-counter-gui` | `src-tauri/`（Tauri 2 + React 19 + Vite） |
+| 命令行（cron） | `rime-word-counter` | `src/main.rs`（`--process` / `--stats`） |
+
+统计逻辑只有一份：根包的 lib（`src/{db,log_processor,stats,paths,i18n}.rs`），
+两个前端都调它。**不要在 `src-tauri` 或前端里重新实现分组/汇总逻辑。**
+
+## 命令
 
 ```bash
-# Build
-cargo build
-cargo build --release
+cargo test                       # 29 个单元测试（核心库 + CLI，不需要 webkit）
+cargo run --release -- --process # 处理日志（cron）
+cargo run --release -- --stats   # 终端看统计
 
-# Test (14 unit tests across db + log_processor)
-cargo test
-cargo test -- --nocapture   # show stdout/stderr
-
-# Run a single test
-cargo test test_upsert_accumulate
-cargo test test_parse_valid_line
-
-# Run CLI log processing (for cron)
-cargo run --release -- --process
-
-# Run GUI (default)
-cargo run --release
-
-# Run with custom paths
-cargo run --release -- --log-path ~/custom.log --db-path ~/custom.db
+npm install                      # 前端依赖（首次）
+npm run tauri dev                # 桌面端开发（必须在仓库根目录执行）
+npm run tauri build              # 打包桌面端
+npm run typecheck                # 前端类型检查
 ```
 
-## Architecture
+## 三条硬约束
 
-The project tracks Rime IME typing stats. A Lua script logs commits to a CSV file; a Rust app processes logs into SQLite and displays stats via a native GUI.
+1. **Linux 编译桌面端需要 `webkit2gtk-4.1`**：`sudo pacman -S webkit2gtk-4.1` /
+   `sudo apt install libwebkit2gtk-4.1-dev`。只跑 `cargo test` 和 CLI 则不需要。
+2. **日志只能截断不能删除**：`log_processor` 用 `File::set_len(0)`，因为 Lua 侧可能
+   正持有文件句柄，删除会让后续写入丢失。
+3. **状态样式用 class，不要用 `aria-*` 属性选择器**：实测 React 19 重渲染时不会更新
+   `aria-*` 属性，`[aria-invalid='true']` 会永远停在首帧状态。详见 AGENTS.md 第 6 节。
 
-```
-Lua (in Rime) → CSV log → log_processor → SQLite → GUI (egui)
-                                              ↓
-                                        plotters (chart)
-```
+## 设计风格
 
-### Modules
-
-- **`main.rs`** — Entry point. Parses CLI args (clap), dispatches to `--process` (log-only) or default GUI mode. Exports `default_log_path()`, `default_db_path()`, `get_cache_dir()` used by other modules.
-
-- **`log_processor.rs`** — Reads CSV (`YYYY-MM-DD,count`), groups by date, upserts to SQLite via `db`, truncates the log file. Single public fn: `process_logs(log_path, db_path)`.
-
-- **`db.rs`** — SQLite wrapper. Table `daily_words(date TEXT PK, word_count INTEGER)`. `GroupBy` enum (Day/Month/Year) with `query_grouped()` using SQL `substr()`. Also `init_db()`, `upsert_word_count()`, `query_all()`, `query_total_words()`, `query_date_range()`.
-
-- **`visualizer.rs`** — plotters renders a combined bar+line chart to an RGBA pixel buffer. Key fn: `render_chart_to_rgba(data, font_name, width, height, x_label, y_label) -> Vec<u8>`. Font detection via `find_cjk_font()` probing fontconfig.
-
-- **`gui.rs`** — egui (eframe) native window. Three panels: top bar (title, total count, lang/theme toggles), left sidebar (date range inputs, quick buttons, group_by radio, reprocess button), central (chart image + stat cards). Loads CJK font into egui's `FontDefinitions` at startup via `setup_cjk_font()`. Supports dark/light mode toggle.
-
-- **`i18n.rs`** — Three-language string table (zh_CN, zh_TW, en). Auto-detects from `LANG` env var. `Language` enum + `Strings` struct with all UI text.
-
-### Key Design Decisions
-
-- **Log truncation**: `File::set_len(0)` after processing — never deletes the file, safe for concurrent Lua writes
-- **DB upsert**: `INSERT ... ON CONFLICT DO UPDATE SET word_count = word_count + EXCLUDED.word_count` — atomic accumulation
-- **Chart rendering**: plotters → RGB buffer → manual RGBA conversion → egui texture. No file I/O for charts in GUI mode.
-- **Font for plotters**: probed via fontconfig (`find_cjk_font()`)
-- **Font for egui**: loaded from known CJK font file paths at startup (`setup_cjk_font()`) — two independent font systems
-- **Data flow**: all data loaded from SQLite at startup into `Vec<(String, i64)>`, filtering/grouping done in-memory
-
-### Dependencies
-
-| Crate | Purpose |
-|---|---|
-| clap | CLI argument parsing |
-| rusqlite (bundled) | SQLite, no system dep |
-| chrono | Date parsing/formatting |
-| plotters | Chart rendering to buffer |
-| eframe/egui | Native GUI framework |
-| dirs | Platform cache directory |
-| anyhow | Error handling |
-
-## Tests
-
-14 tests (`db.rs` + `log_processor.rs`). The `db` tests use `Connection::open_in_memory()`. Integration test `test_process_logs_integration` creates temp log and db files, processes them, verifies DB state and file truncation, then cleans up.
+Linear 风格深色 SaaS：近黑画布 `#010102`、单一强调色 `#5e6ad2`、1px hairline 分隔、
+层级靠 surface 提亮而非阴影。改动前先看 `ui/src/styles/tokens.css`。

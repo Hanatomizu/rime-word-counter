@@ -1,0 +1,26 @@
+[package]
+name = "rime-word-counter-gui"
+version = "1.0.0-r2"
+edition = "2021"
+description = "Rime 输入法字数统计桌面端（Tauri + React）"
+authors = ["hanatomizu"]
+repository = "https://github.com/Hanatomizu/rime-word-counter"
+rust-version = "1.77.2"
+
+# Tauri 需要 lib 目标（移动端入口也复用同一份 lib）
+[lib]
+name = "rime_word_counter_gui_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+# 解析 --log-path / --db-path 覆盖参数
+clap = { version = "4", features = ["derive"] }
+# 复用 CLI 用的同一套核心逻辑（db / log_processor / stats / paths / i18n）
+rime-word-counter = { path = ".." }

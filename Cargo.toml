@@ -12,6 +12,24 @@ path-guid = "35C32B62-9455-4607-96E4-902AEA99EF25"
 license = false
 eula = false
 
+# 桌面端（Tauri + React）是同一 workspace 的成员，放在 src-tauri/。
+# default-members 只包含根包，因此：
+#   cargo build / cargo test / cargo run   → 只编译「核心库 + CLI」
+#   （不需要 webkit2gtk，没装图形依赖的机器也能跑测试和 cron）
+#   npm run tauri dev / npm run tauri build → 编译桌面端
+[workspace]
+members = ["src-tauri"]
+default-members = ["."]
+resolver = "2"
+
+[lib]
+name = "rime_word_counter"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rime-word-counter"
+path = "src/main.rs"
+
 [dependencies]
 # CLI 参数解析
 clap = { version = "4", features = ["derive"] }
@@ -19,15 +37,20 @@ clap = { version = "4", features = ["derive"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 # 日期解析与格式化
 chrono = "0.4"
-# 图表生成（PNG 后端 + 内存渲染）
-plotters = "0.3"
 # 错误处理
 anyhow = "1"
 # 获取平台标准目录（缓存目录等）
 dirs = "5"
-# GUI 框架（egui）
-eframe = "0.31"
-egui = "0.31"
+# 序列化：stats 模块的输出直接作为 Tauri 命令的返回值
+serde = { version = "1", features = ["derive"] }
+
+# 发布构建配置（同时作用于 CLI 与桌面端，Tauri 官方模板推荐值）
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true
 
 # The profile that 'dist' will build with
 [profile.dist]

@@ -1,0 +1,166 @@
+/**
+ * 设计令牌（Linear 风格深色 SaaS）
+ *
+ * 三条硬规则：
+ *  1. 画布是近黑 #010102，不是纯黑；
+ *  2. 全站只有一个强调色 --primary，只出现在品牌标记、焦点环、主 CTA、图表；
+ *  3. 层级靠 surface-1 → surface-4 的逐级提亮 + 1px hairline，而不是阴影。
+ */
+
+:root {
+  color-scheme: dark;
+
+  /* ---- 画布与表面 ---- */
+  --canvas: #010102;
+  --surface-1: #0f1011;
+  --surface-2: #141516;
+  --surface-3: #18191a;
+  --surface-4: #191a1b;
+  --hairline: #23252a;
+  --hairline-strong: #34343a;
+
+  /* ---- 文字分级 ---- */
+  --ink: #f7f8f8;
+  --ink-muted: #d0d6e0;
+  --ink-subtle: #8a8f98;
+  --ink-tertiary: #62666d;
+
+  /* ---- 唯一强调色 ---- */
+  --primary: #5e6ad2;
+  --primary-hover: #828fff;
+  --primary-soft: rgba(94, 106, 210, 0.16);
+  --primary-ring: rgba(94, 106, 210, 0.4);
+  --on-primary: #ffffff;
+
+  /* ---- 语义色（仅用于状态，不做装饰） ---- */
+  --success: #27a644;
+  --danger: #e5484d;
+  --danger-soft: rgba(229, 72, 77, 0.12);
+
+  /* ---- 圆角 ---- */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 12px;
+
+  /* ---- 字体 ---- */
+  --font-sans:
+    'Inter Variable', Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+    'Noto Sans CJK SC', 'Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-mono:
+    'JetBrains Mono', 'IBM Plex Mono', 'Fira Code', ui-monospace, SFMono-Regular, Menlo,
+    Consolas, monospace;
+
+  /* ---- 动效 ---- */
+  --ease: cubic-bezier(0.32, 0.72, 0, 1);
+  --duration: 140ms;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--canvas);
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.5;
+  letter-spacing: -0.003em;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow: hidden;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  margin: 0;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+h1 {
+  font-size: 20px;
+  letter-spacing: -0.03em;
+}
+
+p {
+  margin: 0;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+input {
+  font: inherit;
+  color: inherit;
+}
+
+::selection {
+  background: var(--primary-soft);
+  color: var(--ink);
+}
+
+/* 键盘可达性：只对键盘焦点显示强调色环 */
+:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 1px var(--canvas),
+    0 0 0 3px var(--primary-ring);
+  border-radius: var(--radius-sm);
+}
+
+/* 细滚动条，颜色贴近 hairline，不抢视觉 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--hairline-strong) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--hairline-strong);
+  border: 3px solid transparent;
+  background-clip: content-box;
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--ink-tertiary);
+  background-clip: content-box;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}

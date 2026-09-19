@@ -9,33 +9,56 @@ use std::io::{BufRead, BufReader};
 
 use anyhow::{Context, Result};
 use chrono::NaiveDate;
+use serde::Serialize;
 
 use crate::db;
 
+/// 一次日志处理的结果，用于 CLI 输出和桌面端的提示信息。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProcessReport {
+    /// 读取到的非空行数
+    pub lines_read: usize,
+    /// 解析失败、被跳过的行数
+    pub parse_errors: usize,
+    /// 实际写入/累加的日期条数
+    pub dates_updated: usize,
+}
+
+impl ProcessReport {
+    /// 是否真的处理了内容（用于判断要不要提示"无新增"）。
+    pub fn is_empty(&self) -> bool {
+        self.lines_read == 0
+    }
+}
+
 /// 处理日志文件：读取 → 按日期分组累加 → 更新数据库 → 清空文件。
 ///
-/// 如果日志文件不存在，直接返回成功（可能是首次运行）。
-pub fn process_logs(log_path: &str, db_path: &str) -> Result<()> {
+/// 日志文件不存在或为空时返回默认报告（首次运行属于正常情况）。
+/// 返回的 [`ProcessReport`] 描述本次处理了多少行、写入多少条日期记录。
+pub fn process_logs(log_path: &str, db_path: &str) -> Result<ProcessReport> {
     let log_file = match OpenOptions::new().read(true).write(true).open(log_path) {
         Ok(f) => f,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             println!("[INFO] 日志文件不存在，跳过处理: {log_path}");
-            return Ok(());
+            return Ok(ProcessReport::default());
         }
         Err(e) => return Err(e).context(format!("无法打开日志文件: {log_path}")),
     };
 
-    // 读取所有行
+    // 读取所有非空行。读取错误直接上报：静默跳过会让字数悄悄少算。
     let reader = BufReader::new(&log_file);
-    let lines: Vec<String> = reader
-        .lines()
-        .filter_map(|line| line.ok())
-        .filter(|l| !l.trim().is_empty())
-        .collect();
+    let mut lines: Vec<String> = Vec::new();
+    for line in reader.lines() {
+        let line = line.context("读取日志文件失败")?;
+        if !line.trim().is_empty() {
+            lines.push(line);
+        }
+    }
 
     if lines.is_empty() {
         println!("[INFO] 日志文件为空，无需处理");
-        return Ok(());
+        return Ok(ProcessReport::default());
     }
 
     println!("[INFO] 读取到 {} 行日志记录", lines.len());
@@ -81,8 +104,7 @@ pub fn process_logs(log_path: &str, db_path: &str) -> Result<()> {
     };
 
     // 提交事务
-    conn.execute_batch("COMMIT")
-        .context("提交数据库事务失败")?;
+    conn.execute_batch("COMMIT").context("提交数据库事务失败")?;
 
     println!("[INFO] 成功更新 {batch_result} 条日期记录");
 
@@ -90,7 +112,11 @@ pub fn process_logs(log_path: &str, db_path: &str) -> Result<()> {
     log_file.set_len(0).context("清空日志文件失败")?;
     println!("[INFO] 日志文件已清空");
 
-    Ok(())
+    Ok(ProcessReport {
+        lines_read: lines.len(),
+        parse_errors,
+        dates_updated: batch_result,
+    })
 }
 
 /// 解析一行 CSV 日志，返回 `(日期字符串, 字数)`。
@@ -163,15 +189,17 @@ mod tests {
             let mut file = File::create(&log_path).unwrap();
             writeln!(file, "2026-07-28,100").unwrap();
             writeln!(file, "2026-07-29,200").unwrap();
-            writeln!(file, "2026-07-29,50").unwrap();  // 同一天追加
+            writeln!(file, "2026-07-29,50").unwrap(); // 同一天追加
         }
 
         // 处理日志
-        process_logs(
-            log_path.to_str().unwrap(),
-            db_path.to_str().unwrap(),
-        )
-        .unwrap();
+        let report = process_logs(log_path.to_str().unwrap(), db_path.to_str().unwrap()).unwrap();
+
+        // 报告应与实际写入一致
+        assert_eq!(report.lines_read, 3);
+        assert_eq!(report.parse_errors, 0);
+        assert_eq!(report.dates_updated, 2);
+        assert!(!report.is_empty());
 
         // 验证数据库
         let conn = db::init_db(db_path.to_str().unwrap()).unwrap();
@@ -186,6 +214,47 @@ mod tests {
         assert!(content.is_empty());
 
         // 清理临时文件
+        let _ = fs::remove_file(&log_path);
+        let _ = fs::remove_file(&db_path);
+    }
+
+    #[test]
+    fn test_process_logs_missing_file_is_noop() {
+        let tmp_dir = std::env::temp_dir();
+        let log_path = tmp_dir.join("test_rime_missing.log");
+        let db_path = tmp_dir.join("test_rime_missing.db");
+        let _ = fs::remove_file(&log_path);
+        let _ = fs::remove_file(&db_path);
+
+        let report = process_logs(log_path.to_str().unwrap(), db_path.to_str().unwrap()).unwrap();
+
+        assert!(report.is_empty());
+        assert_eq!(report.dates_updated, 0);
+        // 日志不存在时不应该创建数据库
+        assert!(!db_path.exists());
+
+        let _ = fs::remove_file(&db_path);
+    }
+
+    #[test]
+    fn test_process_logs_counts_parse_errors() {
+        let tmp_dir = std::env::temp_dir();
+        let log_path = tmp_dir.join("test_rime_badlines.log");
+        let db_path = tmp_dir.join("test_rime_badlines.db");
+
+        {
+            let mut file = File::create(&log_path).unwrap();
+            writeln!(file, "2026-07-28,100").unwrap();
+            writeln!(file, "garbage-line").unwrap();
+            writeln!(file, "2026-07-29,not-a-number").unwrap();
+        }
+
+        let report = process_logs(log_path.to_str().unwrap(), db_path.to_str().unwrap()).unwrap();
+
+        assert_eq!(report.lines_read, 3);
+        assert_eq!(report.parse_errors, 2);
+        assert_eq!(report.dates_updated, 1);
+
         let _ = fs::remove_file(&log_path);
         let _ = fs::remove_file(&db_path);
     }

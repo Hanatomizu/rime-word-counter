@@ -1,0 +1,21 @@
+{
+  "name": "rime-word-counter",
+  "version": "1.0.0-r2",
+  "private": true,
+  "description": "Rime 输入法字数统计 —— Tauri 桌面端工作区（前端在 ui/，Rust 桌面壳在 src-tauri/）",
+  "workspaces": [
+    "ui"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace ui",
+    "build": "npm run build --workspace ui",
+    "preview": "npm run preview --workspace ui",
+    "typecheck": "npm run typecheck --workspace ui",
+    "tauri": "tauri",
+    "test": "cargo test",
+    "fmt": "cargo fmt"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4"
+  }
+}

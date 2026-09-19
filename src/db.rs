@@ -4,9 +4,11 @@
 
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
+use serde::Serialize;
 
 /// 分组粒度
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum GroupBy {
     /// 按日分组（YYYY-MM-DD）
     Day,
@@ -16,10 +18,24 @@ pub enum GroupBy {
     Year,
 }
 
+impl GroupBy {
+    /// 从查询参数解析分组粒度，未知值回退到按日。
+    pub fn from_code(code: &str) -> Self {
+        match code.to_ascii_lowercase().as_str() {
+            "month" | "monthly" => GroupBy::Month,
+            "year" | "yearly" => GroupBy::Year,
+            _ => GroupBy::Day,
+        }
+    }
+}
+
 /// 初始化数据库，创建 `daily_words` 表（如果不存在）。
+///
+/// 会自动创建数据库文件的父目录，因此可以直接传入任意自定义路径。
 pub fn init_db(db_path: &str) -> Result<Connection> {
-    let conn = Connection::open(db_path)
-        .with_context(|| format!("无法打开数据库: {db_path}"))?;
+    crate::paths::ensure_parent_dir(db_path)?;
+
+    let conn = Connection::open(db_path).with_context(|| format!("无法打开数据库: {db_path}"))?;
 
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS daily_words (
@@ -83,14 +99,15 @@ pub fn query_grouped(
     let mut stmt = conn.prepare(sql).context("准备分组查询语句失败")?;
     let rows = stmt
         .query_map(params![start_date, end_date], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, i64>(1)?,
-            ))
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
         })
         .context("执行分组查询失败")?;
 
-    let result: Vec<(String, i64)> = rows.filter_map(|r| r.ok()).collect();
+    // 逐行传播错误：静默丢弃出错的行会让统计结果悄悄变少
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row.context("读取查询结果失败")?);
+    }
     Ok(result)
 }
 
@@ -119,30 +136,41 @@ pub fn query_all(conn: &Connection) -> Result<Vec<(String, i64)>> {
 
     let rows = stmt
         .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, i64>(1)?,
-            ))
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
         })
         .context("查询全部字数数据失败")?;
 
-    let result: Vec<(String, i64)> = rows.filter_map(|r| r.ok()).collect();
+    // 逐行传播错误：静默丢弃出错的行会让统计结果悄悄变少
+    let mut result = Vec::new();
+    for row in rows {
+        result.push(row.context("读取查询结果失败")?);
+    }
     Ok(result)
 }
 
 /// 获取数据库中的最早和最晚日期。
 pub fn query_date_range(conn: &Connection) -> Result<(String, String)> {
     let (start, end): (Option<String>, Option<String>) = conn
-        .query_row(
-            "SELECT MIN(date), MAX(date) FROM daily_words",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
+        .query_row("SELECT MIN(date), MAX(date) FROM daily_words", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
         .context("查询日期范围失败")?;
 
     let start = start.unwrap_or_else(|| chrono::Local::now().format("%Y-%m-%d").to_string());
     let end = end.unwrap_or_else(|| chrono::Local::now().format("%Y-%m-%d").to_string());
     Ok((start, end))
+}
+
+/// 统计指定日期范围内「有记录的天数」（不是分组数）。
+pub fn count_days_in_range(conn: &Connection, start_date: &str, end_date: &str) -> Result<usize> {
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM daily_words WHERE date >= ?1 AND date <= ?2",
+            params![start_date, end_date],
+            |row| row.get(0),
+        )
+        .context("统计范围内天数失败")?;
+    Ok(count.max(0) as usize)
 }
 
 #[cfg(test)]
@@ -223,8 +251,8 @@ mod tests {
         seed_test_data(&conn);
         let data = query_grouped(&conn, "2026-01-01", "2026-12-31", GroupBy::Month).unwrap();
         assert_eq!(data.len(), 2);
-        assert_eq!(data[0], ("2026-01".to_string(), 300));  // 100 + 200
-        assert_eq!(data[1], ("2026-02".to_string(), 700));  // 300 + 400
+        assert_eq!(data[0], ("2026-01".to_string(), 300)); // 100 + 200
+        assert_eq!(data[1], ("2026-02".to_string(), 700)); // 300 + 400
     }
 
     #[test]

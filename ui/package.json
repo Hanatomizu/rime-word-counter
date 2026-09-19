@@ -1,0 +1,26 @@
+{
+  "name": "rime-word-counter-ui",
+  "version": "1.0.0-r2",
+  "private": true,
+  "type": "module",
+  "description": "Rime 字数统计桌面端界面（React + Vite + TypeScript，Linear 风格深色主题）",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@fontsource-variable/inter": "^5.3.0",
+    "@tauri-apps/api": "^2.11.1",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "typescript": "^5.7.0",
+    "vite": "^8.3.0"
+  }
+}

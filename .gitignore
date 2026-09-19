@@ -4,6 +4,17 @@
 # 生成的图表
 *.png
 
+# 例外：应用图标必须提交（Tauri 打包与窗口图标都需要）
+!src-tauri/icons/*.png
+!src-tauri/icons/**/*.png
+
+# 前端依赖与构建产物
+node_modules/
+ui/dist/
+
+# Tauri 构建时生成的权限 schema
+/src-tauri/gen/schemas/
+
 # SQLite 数据库文件
 *.db
 
