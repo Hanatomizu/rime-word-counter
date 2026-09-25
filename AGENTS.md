@@ -269,6 +269,20 @@ cargo test
   想让老发行版可用需改用更老的构建镜像并自行编译 webkit2gtk。
 - `dist-workspace.toml` 保留但**不再驱动 CI**（见该文件顶部注释），不要跑 `dist init`。
 
+### ⚠️ 改这个 workflow 时的两个坑（都实际踩过）
+
+1. **桌面端产物路径带目标三元组**：CI 里带 `--target <triple>` 构建，产物落在
+   `target/<triple>/release/bundle/`，**不是** `target/release/bundle/`（后者只在
+   不带 `--target` 的原地构建时出现）。job 里的 `path` 一律用 `**/release/bundle/…`
+   通配来兼容两种布局，别再写死。
+2. **run 块按平台选工具**：`desktop` / `cli` 两个 job 跑在三个平台上，块内不能出现
+   - `/dev/null`（Windows PowerShell 会解析成 `D:\dev\null` 而报错）
+   - `sha256sum`（macOS 与 Windows Git Bash 都没有，那是 GNU coreutils）
+
+   校验和统一用 `node`（三个平台都有）；只有 `publish` / `versioning`（固定
+   `ubuntu-24.04`）才可以用 GNU 工具。只用 bash 语法而**不实际跨平台跑过**的写法，
+   很容易在 macOS/Windows 上才炸。
+
 ---
 
 ## 9. 排查清单

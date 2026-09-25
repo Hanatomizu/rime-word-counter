@@ -213,29 +213,34 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # path 用 **/ 通配：带 --target 构建时产物在 target/<triple>/release/bundle/，
+        # 不带时在 target/release/bundle/，通配两种布局都命中。
+        # 这里只列真正的安装包，不用整个 bundle/ 目录——.deb 会解包出中间目录，
+        # 传目录会把 data.tar.gz 之类的中间文件一起塞进 artifacts。
         include:
           - runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             bundles: deb,appimage
             path: |
-              target/release/bundle/deb/*.deb
-              target/release/bundle/appimage/*.AppImage
+              **/release/bundle/deb/*.deb
+              **/release/bundle/appimage/*.AppImage
           - runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             bundles: deb,appimage
             path: |
-              target/release/bundle/deb/*.deb
-              target/release/bundle/appimage/*.AppImage
+              **/release/bundle/deb/*.deb
+              **/release/bundle/appimage/*.AppImage
           - runner: macos-latest
             target: aarch64-apple-darwin
             bundles: dmg
-            path: target/release/bundle/dmg/*.dmg
+            # 不含 .app 目录：内含符号链接，且压缩后拿到手也无法直接双击运行
+            path: "**/release/bundle/dmg/*.dmg"
           - runner: windows-latest
             target: x86_64-pc-windows-msvc
             bundles: msi,nsis
             path: |
-              target/release/bundle/msi/*.msi
-              target/release/bundle/nsis/*.exe
+              **/release/bundle/msi/*.msi
+              **/release/bundle/nsis/*.exe
     steps:
       - uses: actions/checkout@v6
         with:
@@ -279,30 +284,60 @@ jobs:
       - name: 安装前端依赖
         run: npm ci
 
-      # 生成 src-tauri/gen/schemas（被 .gitignore 忽略，必须是全新检出后重建）
-      - name: 准备 Tauri 构建
-        run: npx tauri build --help > /dev/null
+      # src-tauri/gen/schemas 是 cargo 编译 tauri-build 时自动生成的，这里不需要预先触碰。
+      # （原先是 `npx tauri build --help > /dev/null`，在 Windows 的 PowerShell 下 /dev/null
+      #  会被当成路径 D:\dev\null 而失败；只做环境自检的话用下面这条。）
+      - name: 环境自检
+        run: npx tauri --version
 
       # beforeBuildCommand (npm run build) 会先构建前端，再由 tauri 打包安装包
       - name: 打包桌面端
         run: npm run tauri build -- --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} ${{ runner.os == 'Linux' && '--no-sign' || '' }}
 
-      # 只对真正的安装包做校验；bundle/ 下还有 .deb 解包出来的中间目录（data.tar.gz 等），
-      # 无差别 find 会把那些中间文件也算进去。用 -maxdepth 2 限制在 bundle/<类型>/<安装包> 这一层。
+      # 注意产物路径带目标三元组：用 --target 构建时装到 target/<triple>/release/bundle，
+      # 只有不带 --target 的原地构建才是 target/release/bundle（这里早期写错，CI 上直接找不到目录）。
+      # 用 node 而不是 sha256sum：macOS runner 默认没有 sha256sum（那是 GNU coreutils），
+      # Windows 的 Git Bash 同样没有。
       - name: 生成 SHA256
         shell: bash
+        env:
+          BUNDLE_DIR: target/${{ matrix.target }}/release/bundle
+          SUMS: SHA256SUMS-desktop-${{ matrix.target }}.txt
         run: |
           set -euo pipefail
-          find target/release/bundle -maxdepth 2 -type f \
-            \( -name '*.deb' -o -name '*.AppImage' -o -name '*.dmg' -o -name '*.msi' -o -name '*.exe' \) \
-            -print0 | sort -z | xargs -0 sha256sum | tee SHA256SUMS-desktop-${{ matrix.target }}.txt
+          if [ ! -d "$BUNDLE_DIR" ]; then
+            echo "::error::找不到 $BUNDLE_DIR，桌面端打包可能没有产出安装包"
+            exit 1
+          fi
+          node -e '
+            const { createHash } = require("node:crypto");
+            const { readFileSync, writeFileSync, readdirSync, statSync } = require("node:fs");
+            const { join, relative, sep } = require("node:path");
+            const [dir, out] = process.argv.slice(1);
+            const ext = /\.(deb|AppImage|dmg|msi|exe)$/;
+            const walk = (d) => readdirSync(d, { withFileTypes: true }).flatMap((e) => {
+              const p = join(d, e.name);
+              return e.isDirectory() ? walk(p) : [p];
+            });
+            // 只取真正的安装包；bundle/ 下还有 .deb 解包出来的中间目录（data.tar.gz 等）
+            const files = walk(dir).filter((f) => ext.test(f) && statSync(f).isFile()).sort();
+            if (files.length === 0) {
+              console.error(`在 ${dir} 下没找到任何安装包（.deb/.AppImage/.dmg/.msi/.exe）`);
+              process.exit(1);
+            }
+            const lines = files.map((f) => {
+              const hash = createHash("sha256").update(readFileSync(f)).digest("hex");
+              return `${hash}  ${relative(dir, f).split(sep).join("/")}`;
+            });
+            writeFileSync(out, lines.join("\n") + "\n");
+            process.stdout.write(lines.join("\n") + "\n");
+          ' "$BUNDLE_DIR" "$SUMS"
 
       - name: 上传产物
         uses: actions/upload-artifact@v7
         with:
           name: desktop-${{ matrix.target }}
           if-no-files-found: error
-          # 不含 macOS 的 .app 目录：目录内含符号链接，且解压后无法直接双击运行
           path: |
             ${{ matrix.path }}
             SHA256SUMS-desktop-${{ matrix.target }}.txt
