@@ -363,23 +363,90 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      # 把所有平台的产物摊平到同一个目录（各文件名唯一，不会互相覆盖）
+      # 先把所有平台的产物下载到临时目录，下一步再挑出真正的发布文件摊平到 release/
       - name: 下载全部产物
         uses: actions/download-artifact@v8
         with:
-          path: dist
+          path: downloads
           merge-multiple: true
+          # 某个平台的产物缺失时立刻失败，而不是发一个静默缺文件的 Release
+          if-no-files-found: error
+
+      # 只把「真正的发布文件」复制到 release/，其余一律丢弃。
+      #
+      # 踩过的坑：直接 `gh release create dist/*` 时，下载目录里混进了一个 target/ 目录
+      # （来自某个 artifact 内部的相对路径结构），gh 把它当资产去读，报
+      # `read dist/target: is a directory` 整步失败。
+      # 这里改成「白名单 + 摊平 + 体积校验 + 纯文件断言」，任何目录或构建中间产物都进不来。
+      - name: 整理发布文件
+        shell: bash
+        env:
+          DOWNLOADS: downloads
+          RELEASE_DIR: release
+        run: |
+          set -euo pipefail
+          mkdir -p "$RELEASE_DIR"
+
+          # 白名单：安装包、CLI 压缩包、各平台校验清单。
+          # 不管混进来的是 target/ 还是平台子目录，这里全部摊平成一层。
+          find "$DOWNLOADS" -mindepth 1 -type f \
+            \( -name '*.deb' -o -name '*.AppImage' -o -name '*.dmg' -o -name '*.msi' -o -name '*.exe' \
+               -o -name '*.tar.xz' -o -name '*.zip' -o -name '*.sha256' -o -name 'SHA256SUMS*.txt' \) \
+            -exec cp -t "$RELEASE_DIR" {} +
+          echo "白名单命中 $(ls -1A "$RELEASE_DIR" | wc -l) 个文件"
+
+          # 体积校验：真实产物最小也有几 MB（CLI 二进制约 2-5MB），远小于此值说明混进了
+          # 文本/中间产物；上限用来拦住被误打包的构建目录。
+          # 校验清单（.sha256 / SHA256SUMS*.txt）本身就是几十字节的文本，单独用更低的下限。
+          node -e '
+            const { readdirSync, statSync, unlinkSync } = require("node:fs");
+            const { join } = require("node:path");
+            const dir = process.argv[1];
+            const isSum = (f) => /\.sha256$/.test(f) || /^SHA256SUMS.*\.txt$/.test(f);
+            const BIN_MIN = 64 * 1024;
+            const SUM_MIN = 8;
+            const MAX = 2 * 1024 * 1024 * 1024;
+            let bad = 0;
+            for (const f of readdirSync(dir)) {
+              const p = join(dir, f);
+              if (!statSync(p).isFile()) { console.error(`  ✗ 非普通文件，剔除：${f}`); unlinkSync(p); bad++; continue; }
+              const size = statSync(p).size;
+              const min = isSum(f) ? SUM_MIN : BIN_MIN;
+              if (size < min || size > MAX) {
+                console.error(`  ✗ 体积异常，剔除：${f} (${size} 字节)`);
+                unlinkSync(p);
+                bad++;
+              }
+            }
+            console.log(bad === 0 ? "体积校验通过" : `剔除了 ${bad} 个异常文件`);
+          ' "$RELEASE_DIR"
+
+          # 最后断言：release/ 下只能有普通文件（这正是 gh 报 is a directory 的那类情况）
+          while IFS= read -r -d '' entry; do
+            if [ ! -f "$entry" ]; then
+              echo "::error::$entry 不是普通文件，拒绝继续"
+              exit 1
+            fi
+          done < <(find "$RELEASE_DIR" -mindepth 1 -print0)
+
+          if [ -z "$(ls -A "$RELEASE_DIR")" ]; then
+            echo "::error::没有任何可发布的文件，构建产物可能没有正确上传"
+            exit 1
+          fi
+
+          echo "--- 待发布文件 ---"
+          ls -lh "$RELEASE_DIR"
 
       - name: 生成 SHA256SUMS.txt
         shell: bash
+        env:
+          RELEASE_DIR: release
         run: |
           set -euo pipefail
-          cd dist
-          # 清掉各平台单独生成的清单，统一汇总成一份（download-artifact 是摊平的，这里只有文件）
-          find . -name 'SHA256SUMS-desktop-*.txt' -delete
+          # 各平台单独的清单没有发布价值（汇总清单才是权威），删掉避免混淆
+          rm -f "$RELEASE_DIR"/SHA256SUMS-desktop-*.txt
+          cd "$RELEASE_DIR"
           find . -maxdepth 1 -type f -print0 | sort -z | xargs -0 sha256sum | tee SHA256SUMS.txt
-          echo "--- 待发布文件 ---"
-          ls -lh
 
       # 找出上一个 tag 用于生成 compare 链接；没有（首次发布）或查不到时退化成当前 tag
       - name: 查找上一个 tag
@@ -436,7 +503,7 @@ jobs:
             echo "<details><summary>SHA256 校验值</summary>"
             echo
             echo '```'
-            cat dist/SHA256SUMS.txt
+            cat release/SHA256SUMS.txt
             echo '```'
             echo
             echo "</details>"
@@ -449,11 +516,29 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_DIR: release
         run: |
           set -euo pipefail
+          # 用数组显式列举文件，不再用 release/* 通配——通配会把混进来的目录交给 gh，
+          # 报 `read ...: is a directory` 整步失败（已踩过）。
+          shopt -s nullglob
+          assets=("$RELEASE_DIR"/*)
+          if [ "${#assets[@]}" -eq 0 ]; then
+            echo "::error::$RELEASE_DIR 下没有可上传的文件"
+            exit 1
+          fi
+          for a in "${assets[@]}"; do
+            if [ ! -f "$a" ]; then
+              echo "::error::$a 不是普通文件，拒绝上传"
+              exit 1
+            fi
+          done
+          echo "将上传 ${#assets[@]} 个文件："
+          printf '  %s\n' "${assets[@]}"
+
           # 合并到已存在的 Release（常用于重跑），否则新建
           if gh release view "$TAG" > /dev/null 2>&1; then
-            gh release upload "$TAG" dist/* --clobber
+            gh release upload "$TAG" "${assets[@]}" --clobber
           else
             flags=()
             # 注意：set -e 下必须用 if 而不是 `[ ... ] && ...`，否则条件为假时整步会退出
@@ -465,6 +550,6 @@ jobs:
               --title "v${VERSION}" \
               --notes-file "$RUNNER_TEMP/notes.md" \
               "${flags[@]}" \
-              dist/*
+              "${assets[@]}"
           fi
           gh release view "$TAG" --json url --jq .url
