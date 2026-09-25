@@ -1,6 +1,6 @@
 {
   "name": "rime-word-counter",
-  "version": "1.0.0-r2",
+  "version": "1.1.0",
   "private": true,
   "description": "Rime 输入法字数统计 —— Tauri 桌面端工作区（前端在 ui/，Rust 桌面壳在 src-tauri/）",
   "workspaces": [

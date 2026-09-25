@@ -35,7 +35,7 @@ export async function getBootstrap(): Promise<Bootstrap> {
       language: 'zh-CN',
       logPath: '~/.cache/rime-word-counter/rime_word.log',
       dbPath: '~/.cache/rime-word-counter/rime_stats.db',
-      version: '1.0.0-r2 (demo)',
+      version: '1.1.0 (demo)',
     };
   }
   return call<Bootstrap>('get_bootstrap');

@@ -1,6 +1,6 @@
 [package]
 name = "rime-word-counter-gui"
-version = "1.0.0-r2"
+version = "1.1.0"
 edition = "2021"
 description = "Rime 输入法字数统计桌面端（Tauri + React）"
 authors = ["hanatomizu"]

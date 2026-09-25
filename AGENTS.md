@@ -246,12 +246,28 @@ cargo test
 
 ## 8. 发布
 
-- **CLI**：`cargo-dist`（`dist-workspace.toml`，`members = ["cargo:."]`）打包根包二进制。
-- **桌面端**：`npm run tauri build`，产物在 `target/release/bundle/`。
-  Tauri 不参与 cargo-dist，需要单独在 CI 里跑。
-- 版本号有三处需要同步：根 `Cargo.toml`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json`
-  （当前 `1.0.0-r2`）。
-  注意 Windows 的 MSI/NSIS 打包对预发布版本号敏感，若报错就把版本改成 `1.0.0`。
+发布全部由 **`.github/workflows/release.yml`**（手写维护，不再由 cargo-dist 生成）驱动，
+推送形如 `v1.1.0` 的 tag 即可触发，CLI 与桌面端会汇总进**同一个 GitHub Release**。
+
+| Job | 产物 |
+|---|---|
+| `versioning` | 解析 tag，并校验 5 处版本号是否一致（不一致直接失败） |
+| `cli` | 6 个平台的 `rime-word-counter-<triple>.tar.xz` / `.zip` |
+| `desktop` | Linux `.deb` + `.AppImage`（x86_64 / aarch64）、macOS `.dmg`、Windows `.msi` + NSIS `.exe` |
+| `publish` | 合并全部产物 + `SHA256SUMS.txt`，创建 Release |
+
+- CLI 用 `cargo build --profile dist`，桌面端用 `npm run tauri build -- --bundles …`，
+  两者共用根包的统计逻辑。
+- **版本号有 5 处需要同步**：根 `Cargo.toml`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json`、
+  `package.json`、`ui/package.json`（当前 `1.1.0`）。`ui/src/lib/api.ts` 里的演示版本文案
+  和 `Cargo.lock` 也一并跟着改。tag 与这些不一致时 `versioning` job 会直接失败。
+- **不要用预发布后缀**（如 `1.1.0-r2`）：MSI/NSIS 对含 `-` 的版本号敏感，历史上踩过坑，
+  现在 `1.1.0` 起统一用纯 `major.minor.patch`。
+- 桌面端产物**未签名/未公证**：macOS 需 `xattr -dr com.apple.quarantine`，
+  Windows 需在 SmartScreen 里放行。签名与公证尚未接入。
+- Linux 桌面端在 `ubuntu-24.04` 上构建，**要求用户机器 glibc ≥ 2.39**；
+  想让老发行版可用需改用更老的构建镜像并自行编译 webkit2gtk。
+- `dist-workspace.toml` 保留但**不再驱动 CI**（见该文件顶部注释），不要跑 `dist init`。
 
 ---
 

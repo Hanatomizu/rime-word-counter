@@ -40,6 +40,23 @@
 - 📟 **终端摘要** — `--stats` 不启动图形界面也能看统计
 - 🧩 **浏览器演示模式** — `npm run dev` 直接开前端调试 UI（本地假数据）
 
+## 下载安装
+
+从 [Releases](https://github.com/Hanatomizu/rime-word-counter/releases) 下载现成安装包
+（CLI 二进制与桌面端安装包在同一个 Release 里，都附带 `SHA256SUMS.txt`）：
+
+| 系统 | 桌面端 | 命令行 |
+|---|---|---|
+| Linux x86_64 / aarch64 | `.deb`、`.AppImage` | `.tar.xz` |
+| macOS (Apple Silicon) | `.dmg` | `.tar.xz` |
+| Windows x64 | `.msi`、`-setup.exe` | `.zip` |
+
+> 安装包**未做代码签名**：macOS 首次打开若提示「已损坏」，执行
+> `xattr -dr com.apple.quarantine "/Applications/Rime Word Counter.app"`；
+> Windows 在 SmartScreen 里选「更多信息 → 仍要运行」。
+> Linux 桌面端在 Ubuntu 24.04 上构建，需要 **glibc ≥ 2.39**。
+> 想从源码构建见下方「快速开始」。
+
 ## 文件结构
 
 ```

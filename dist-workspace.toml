@@ -1,3 +1,11 @@
+# ⚠️ 本文件当前**不参与发布流程**，保留仅作为 CLI 目标矩阵的参考。
+#
+# `.github/workflows/release.yml` 已改为手写维护（CLI + Tauri 桌面端一起发），
+# cargo-dist 的生成器不再接管它。因此：
+#   * 不要执行 `dist init`（会覆盖 release.yml，丢掉桌面端打包）
+#   * 修改发布矩阵请直接改 release.yml 里 cli / desktop 两个 job 的 matrix
+# 若要恢复 cargo-dist 生成，需先决定桌面端怎么并行发布。
+
 [workspace]
 members = ["cargo:."]
 

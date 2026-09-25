@@ -2699,7 +2699,7 @@ dependencies = [
 
 [[package]]
 name = "rime-word-counter"
-version = "1.0.0-r2"
+version = "1.1.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2711,7 +2711,7 @@ dependencies = [
 
 [[package]]
 name = "rime-word-counter-gui"
-version = "1.0.0-r2"
+version = "1.1.0"
 dependencies = [
  "anyhow",
  "clap",

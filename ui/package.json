@@ -1,6 +1,6 @@
 {
   "name": "rime-word-counter-ui",
-  "version": "1.0.0-r2",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "description": "Rime 字数统计桌面端界面（React + Vite + TypeScript，Linear 风格深色主题）",
